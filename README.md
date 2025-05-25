@@ -20,7 +20,7 @@
 
 ### 개요
 
-(아키텍처 다이어그램 TBD)
+![pipeline](./assets/images/deploy-pipeline.png)
 
 1. 저장소 체크아웃
 2. `npm ci`: `package-lock.json` 파일 기반으로 프로젝트 의존성을 정확하고 빠르게 설치.
