@@ -1,6 +1,17 @@
 # Chapter 4-1. 인프라 관점의 성능 최적화
 
-## 학습 목표
+## 목차
+
+- [1. 학습 목표](#-1-학습-목표)
+- [2. 주요 링크](#-2-주요-링크)
+- [3. 배포 파이프라인](#-3-배포-파이프라인)
+- [4. 배포 프로세스 정리](#-4-배포-프로세스-정리)
+- [5. 주요 개념 정리](#-5-주요-개념-정리)
+- [6. 성능 최적화 분석 보고서](#-6-성능-최적화-분석-보고서)
+- [7. 그 외에 배운 것](#-7-그-외에-배운-것)
+- [8. 과제 피드백](#-8-과제-피드백)
+
+## 🎯 1. 학습 목표
 
 **기본 과제**
 
@@ -10,133 +21,150 @@
 
 > 인프라 레벨 최적화, 특히 CDN을 사용한 최적화를 이해하고 성능 개선을 위한 사전 작업인 ‘모니터링’을 준비합니다.
 
-## 주요 링크
+## 🔗 2. 주요 링크
 
 - S3 버킷 웹사이트 EP: http://front-5th-chapter4-1.s3-website.ap-northeast-2.amazonaws.com/
 - CloutFront 배포 도메인: https://d1nvnu651mhk3o.cloudfront.net/
 - Route53를 이용한 대체 도메인: https://front-5th-chapter4-1.info/
 
-## 배포 파이프라인
-
-### 개요
+## 🏛️ 3. 배포 파이프라인
 
 ![pipeline](./assets/images/deploy-pipeline.png)
 
-1. 저장소 체크아웃
-2. `npm ci`: `package-lock.json` 파일 기반으로 프로젝트 의존성을 정확하고 빠르게 설치.
-3. `npm run build`: 프로젝트 빌드
-4. 저장소 Secrets에 저장된 정보를 토대로 AWS 서비스에 접근할 수 있도록 자격 증명 설정.
-5. 프로젝트 빌드 결과물 디렉토리(out) 내용을 S3 버킷에 동기화. `--delete` 옵션은 디렉토리에는 없지만 버킷에는 있는 파일을 삭제하여 빌드 결과물과 버킷 내용을 정확히 일치시킴.
-6. CloudFront 배포 ID를 대상으로 캐시를 무효화하여 변경 사항이 즉시 적용되도록 반영.
+## 🧹 4. 배포 프로세스 정리
 
-### S3 버킷 웹사이트, CloutFront 배포 도메인, Route53 대체 도메인 비교
+### (1) 저장소 체크아웃
 
-![s3-cf-compare](./assets/images/s3-cf-compare.png)
+저장소의 코드를 Actions runner로 가져온다.
 
-> 좌측은 S3 버킷 웹사이트, 우측은 CloutFront 배포 도메인. 용량과 시간에서 큰 차이를 보인다.
+```bash
+- name: Checkout repository
+  uses: actions/checkout@v4
+```
 
-![s3-cf-compare](./assets/images/s3-cf-compare.png)
+### (2) 프로젝트 의존성 설치
 
-> 좌측은 CloutFront 배포 도메인, 우측은 Route53 대체 도메인. 용량과 시간이 대동소이하다.
+`npm ci` 명령어를 통해 `package-lock.json` 기반으로 프로젝트 의존성을 설치한다.
 
-네트워크 탭을 통한 비교 외에 다른 방법은 없을까 찾아보았고 몇 가지 방법들을 더 찾아서 아래에 정리했습니다.
+```bash
+- name: Install dependencies
+  run: npm ci
+```
 
-### WebPageTest.org를 통한 비교
+### (3) 프로젝트 빌드
 
-#### 👀 Visual Progress
+`npm run build` 명령어를 통해 Next.js 프로젝트를 프로덕션용으로 빌드하여 `out` 디렉토리에 정적 파일들을 생성한다.
 
-![visual-progress](./assets/images/visual-progress.png)
+```bash
+- name: Build
+  run: npm run build
+```
 
-- CloudFront / Route53는 1.6~2.0초 내에 100% 렌더링 완료
-- S3는 5초가 넘어서야 완전히 로드됨 → 차이가 매우 큼
-- Route53과 CloudFront가 동일한 선형 그래프를 가지는 이유는 동일한 CloudFront를 백엔드로 두었기 때문임.
+### (4) AWS 자격 증명 획득
 
-> 📌 CloudFront를 사용할 경우 시각적으로 빠른 피드백을 제공할 수 있고, 유저 체감 성능이 월등히 향상됨.
+저장소 Secrets에 저장된 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` 정보를 바탕으로 AWS CLI와 SDK를 사용할 수 있도록 자격을 인증한다.
 
-#### 🔋 Timings
+```bash
+- name: Configure AWS credentials
+  uses: aws-actions/configure-aws-credentials@v1
+  with:
+    aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+    aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    aws-region: ${{ secrets.AWS_REGION }}
+```
 
-![timings](./assets/images/timings.png)
+### (5) S3에 빌드 결과물 업로드
 
-- Time to First Byte (TTFB): S3는 느리고 CloudFront는 빠름 (CDN 캐시 영향)
-- Start Render / First Contentful Paint / LCP 모두 S3가 현저히 느림
-- Load Time / Visually Complete 역시 S3는 평균 5초 이상, CF는 2초 이내
-- CPU Busy Time: S3가 훨씬 길다 → 리소스 최적화가 덜 되어 있음
-- Speed Index: CloudFront가 가장 낮음 → “빠르게 보이는 정도”가 가장 뛰어남
+프로젝트 빌드 결과물 디렉토리(out) 내용을 S3 버킷에 동기화한다. `--delete` 옵션은 디렉토리에는 없지만 버킷에는 있는 파일을 삭제하여 빌드 결과물과 버킷 내용을 정확히 일치시킨다.
 
-> 📌 CloudFront를 붙이면 초기 응답부터 콘텐츠 렌더, 사용자 체감 속도 전반이 좋아짐. S3 단독은 성능 병목이 명확함.
+```bash
+- name: Deploy to S3
+  run: |
+    aws s3 sync out/ s3://${{ secrets.S3_BUCKET_NAME }} --delete
+```
 
-#### 🪣 Bytes
+### (6) CloudFront 캐시 무효화
 
-![bytes](./assets/images/bytes.png)
+CloudFront 배포 ID를 대상으로 캐시를 무효화하여 변경 사항이 즉시 적용되도록 반영한다.
 
-- S3는 JS, HTML, Font 등을 모두 거의 2배 가량 더 많이 전송
-- CloudFront, Route53은 용량이 절반가량 줄어 있음
-  - 이유: 압축 및 캐시 최적화, 중복 자산 제거, 헤더 최적화 등 CDN의 이점
+```bash
+- name: Invalidate CloudFront cache
+  run: |
+    aws cloudfront create-invalidation --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
+```
 
-> 📌 CloudFront는 압축을 통해 동일한 콘텐츠를 더 작고 빠르게 전송 → 네트워크 비용 절감 + 사용자 경험 개선
+## 📚 5. 주요 개념 정리
 
-### Chrome Devtools LightHouse
+### (1) GitHub Actions와 CI/CD 도구
 
-![s3-lighthouse](./assets/images/s3-lighthouse.png)
+#### ❓ GitHub Actions
 
-![cf-lighthouse](./assets/images/cf-lighthouse.png)
+- GitHub Actions는 GitHub에서 제공하는 CI/CD 도구. 저장소 내의 `.github/workflows/*.yml` 파일을 기반으로 코드 푸시나 PR 생성/수정 등의 이벤트를 트리거로 삼아서 자동으로 워크플로우를 실행한다.
 
-![route53-lighthouse](./assets/images/route53-lighthouse.png)
+#### ❓ CI/CD
 
-(설명 TBD)
+- CI(Continuous Integration): 지속적 통합이라고 한다. 코드 병합 시에 자동으로 빌드와 테스트를 수행하여 변경점을 검증하고 코드의 품질을 유지한다.
+- CD(Continuous Deployment): 지속적 배포라고 한다. 빌드된 결과물을 자동으로 배포하는 것을 말한다.
 
-## 기술적 성장
+### (2) 스토리지와 S3
 
-### `npm install` vs `npm ci`
+#### ❓ S3
 
-npm ci는 처음 접해봤습니다. ci가 continuous integration의 약자인 것은 쉽게 추론이 가능했고 스크립트 내에서의 위치로 의존성을 설치하는거구나 눈치를 채긴 했지만 기능의 정확한 동작이나 npm install 과의 차이는 모르기 때문에 정리를 했습니다.
+- **Amazon S3 (Simple Storage Service)** 는 AWS에서 제공하는 객체 스토리지 서비스.
+- 정적 파일(HTML, JS, 이미지, JSON 등)을 URL 기반으로 접근 가능하게 저장함.
+- 용도에 따라 웹 호스팅, 백업, 로그 저장소로 사용됨.
 
-1. npm install
+**스토리지 서비스 정리**
 
-- package.json을 기반으로 의존성을 설치함.
-- package-lock.json이 있으면 이를 참고하지만, 새로 생기거나 바뀔 수 있음.
-- node_modules를 유지하며 증분 설치 가능.
-- 로컬 개발 중 새로운 패키지를 추가할 때 사용.
-- 잠재적으로 node_modules가 lock file과 일치하지 않을 수 있음.
+| 클라우드                | 서비스명              | 특징                                                               |
+| ----------------------- | --------------------- | ------------------------------------------------------------------ |
+| **AWS**                 | **S3**                | 업계 표준 객체 스토리지, 다양한 스토리지 클래스로 비용 최적화 가능 |
+| **GCP**                 | **Cloud Storage**     | S3와 거의 유사한 객체 저장, multi-region 제공                      |
+| **Azure**               | **Blob Storage**      | block, append, page blob 등 제공. Hot/Cool/Archive 계층 제공       |
+| **Cloudflare**          | **R2**                | S3 호환, **egress 비용 없음**, Cloudflare Workers와 연동 용이      |
+| **DigitalOcean**        | **Spaces**            | S3 호환 API, 간편한 UI, 소규모 프로젝트에 적합                     |
+| **Backblaze**           | **B2 Cloud Storage**  | S3 호환, 저렴한 요금, 고정 콘텐츠 저장용에 적합                    |
+| **Wasabi**              | **Hot Cloud Storage** | 저렴하고 빠른 스토리지, egress 무료 정책이 강점                    |
+| **MinIO (자체 호스팅)** | **MinIO**             | S3 API 호환, 온프레미스 구축 가능, 경량 경로에 적합                |
 
-2. npm ci
+### (3) CDN과 CloudFront
 
-- package-lock.json을 정확하게 따름.
-- node_modules 폴더가 완전히 삭제되고 재설치됨.
-- package-lock.json과 package.json이 일치하지 않으면 실패함.
-- CI/CD 환경이나 재현 가능한 빌드가 필요할 때 사용함.
-- 빠르고 일관된 설치를 보장함.
+#### ❓ CDN
 
-#### ✅ 요약
+- Content Delivery Network의 약자. 전 세계에 분산된 엣지 로케이션 서버를 통해 사용자가 요청한 정적 리소스를 가장 가까운 서버에서 빠르게 전송할 수 있도록 하는 기술.
 
-| 항목                              | `npm install`                             | `npm ci`                                |
-| --------------------------------- | ----------------------------------------- | --------------------------------------- |
-| **용도**                          | 개발 및 일반 설치                         | CI/CD, 자동화 환경                      |
-| **속도**                          | 상대적으로 느림                           | 더 빠름                                 |
-| **`package-lock.json` 사용 여부** | 선택적 (존재 시 반영하되, 덮어쓰기도 함)  | 반드시 필요하며, **엄격하게** 따름      |
-| **파일 일관성 보장**              | 낮음 (버전 차이 가능성 존재)              | 높음 (lock 파일 기반으로 정확하게 설치) |
-| **노드 모듈 삭제**                | 하지 않음                                 | **`node_modules` 폴더 삭제 후 재설치**  |
-| **수정 가능성**                   | `package-lock.json`이 수정될 수 있음      | 수정되지 않음                           |
-| **호환성 검사**                   | `package.json`과 lock 파일 불일치 시 경고 | 불일치 시 **설치 실패**                 |
+#### ❓ CloudFront
 
-#### 🛠 언제 무엇을 써야 할까?
+- CloudFront는 AWS가 제공하는 CDN 서비스이다.
+- 정적 리소스를 전 세계적으로 빠르게 제공 (레이턴시 단축)
+- S3 origin 보호 가능 (CloudFront 외 요청 차단)
+- HTTPS 인증서 제공 (무료 SSL)
+- 사용량 기반 요금으로 트래픽 최적화
 
-| 상황                                                              | 추천 명령어   |
-| ----------------------------------------------------------------- | ------------- |
-| 로컬에서 패키지를 추가/업데이트하거나 실험할 때                   | `npm install` |
-| CI/CD 파이프라인에서 안정적으로 재현 가능한 환경을 만들고 싶을 때 | `npm ci`      |
-| 새로운 팀원이 프로젝트를 셋업할 때 (일관된 환경이 필요함)         | `npm ci`      |
+**CDN 서비스 정리**
 
-#### 👍 대응 되는 명령어
+| 클라우드/업체  | CDN 서비스명            | 특징                                                                   |
+| -------------- | ----------------------- | ---------------------------------------------------------------------- |
+| **AWS**        | **CloudFront**          | AWS 전역 인프라 기반, S3/EC2와 자연스럽게 연동됨                       |
+| **GCP**        | **Cloud CDN**           | Google 글로벌 백본 이용, GCS, App Engine 등과 통합                     |
+| **Azure**      | **Azure CDN**           | Akamai/Verizon 기반 선택 가능, Blob Storage와 통합                     |
+| **Cloudflare** | **CDN**                 | 전 세계 300개 이상 엣지, **무료 플랜**에서도 빠른 응답, DDoS 방어 탁월 |
+| **Fastly**     | **Fastly CDN**          | 실시간 캐시 제어, 동적 콘텐츠 처리에 강점, VCL 스크립팅                |
+| **Akamai**     | **Ion/CDN**             | 세계 최대 규모의 CDN, 엔터프라이즈에 특화                              |
+| **Netlify**    | **Netlify Edge**        | 정적 웹사이트 호스팅 + CDN + CI/CD 통합 제공                           |
+| **Vercel**     | **Vercel Edge Network** | Next.js 친화적, 자동 CDN 배포 및 라우팅 최적화                         |
 
-| 패키지 매니저      | 일반 설치      | CI 전용 설치                     |
-| ------------------ | -------------- | -------------------------------- |
-| **npm**            | `npm install`  | `npm ci`                         |
-| **Yarn (v1)**      | `yarn install` | `yarn install --frozen-lockfile` |
-| **Yarn (v2 이상)** | `yarn install` | `yarn install --immutable`       |
-| **pnpm**           | `pnpm install` | `pnpm install --frozen-lockfile` |
+### (4) 캐시 무효화
 
-### 캐시 무효화의 중요성과 시점
+#### ❓ 정의
+
+캐시에 저장된 데이터가 더 이상 유효하지 않을 때, 그것을 삭제하거나 새 데이터로 갱신하는 과정.
+
+#### 🏹 목적
+
+최신 정보로 갱신하여 사용자에게 오래된 정보가 노출되지 않도록 하기 위함.
+
+#### 캐시 무효화의 중요성과 시점
 
 배포 스크립트 내에서는 S3에 빌드 결과물을 올린 뒤에 캐시 무효화를 진행하고 있다.
 
@@ -150,36 +178,65 @@ npm ci는 처음 접해봤습니다. ci가 continuous integration의 약자인 �
     aws cloudfront create-invalidation --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
 ```
 
-#### 🔄 다른 상황에서는 언제 캐시 무효화를 고려해야 할까?
+보통 웹에서는 캐시를 이용하고 있기 때문에 변경이 바로 갱신되지 않을 수 있다. 그렇기 때문에 새 빌드 결과물을 업로드하고 캐시 무효화를 진행하여 새 컨텐츠가 노출되도록 한다.
 
-1. 빌드 결과물이 URL 기반으로 고정되지 않은 경우
+#### 🧐 캐시 무효화가 필요한 상황
 
-   > 예: main.js, index.html 등 이름이 동일한 파일이 덮어쓰기 되면서 업데이트되는 경우
+| 상황                     | 예시                                                            |
+| ------------------------ | --------------------------------------------------------------- |
+| 웹사이트 UI가 변경됨     | 이미지, JS, CSS가 바뀌었지만 브라우저는 이전 버전 캐시를 사용함 |
+| API 응답 데이터가 갱신됨 | 사용자 정보가 바뀌었는데 캐시된 JSON 응답을 계속 반환           |
+| 배포가 이루어짐          | 새로운 정적 파일이 배포됐지만 CDN은 이전 파일을 계속 제공함     |
 
-   - 무효화 필요
-   - 사용자가 캐싱된 asset을 보게 될 가능성 있음
+#### ⚡️ 캐시 무효화 전략
 
-   📍 시점: S3 업로드 직후 또는 CloudFront 배포 완료 이벤트 후 (CI 파이프라인에서 hook 사용)
+#1 🔁 만료 기반 무효화
 
-2. #️⃣ 파일 이름에 해시가 포함된 경우
+- TTL(Time-To-Live) 설정하여 일정 시간이 지나면 자동으로 캐시가 만료
+- 예: `Cache-Control: max-age=3600`
 
-   > 예: main.abc123.js, style.def456.css 처럼 content hash가 붙는 경우 (Next.js도 가능)
+#2 🆕 버전 기반 무효화
 
-   - 보통 CloudFront 캐시 무효화가 불필요
-   - 파일 이름이 바뀌므로 새 URL을 요청하게 됨
+- 파일이나 URL에 해시를 포함하거나 버전 값을 붙여서 새 파일로 인식하게 함 #️⃣
+- 예: `main.js?v=2`, `app.v20.scss`
+- 보통 CloudFront 캐시 무효화 불필요
+- 파일명이나 URL 자체가 바뀌므로 항상 새 URL을 요청해서 가장 안정적이고 일반적임
 
-   index.html처럼 해시가 없고 항상 같은 이름을 쓰는 파일은 예외적으로 무효화 필요
+#3 🔥 강제 무효화
 
-   📍 시점: index.html과 같이 캐싱되어선 안 되는 파일만 선택적으로 invalidate
+- 캐시된 파일을 삭제하거나 덮어쓰기
+- 버그, 잘못된 이미지, 민감한 파일 등이 잘못 올라간 경우 🚨
+- 보통 수동으루 무효화 처리
+- 예: CDN에서 수동으로 무효화
 
-3. 🚨 실시간 긴급 대응 시
+#### ✅ 각 캐시 계층과 무효화 방식
 
-   > 버그, 오류 이미지, 민감한 파일이 잘못 올라간 경우 등
+| 계층              | 캐시 예시                 | 무효화 방식                                    |
+| ----------------- | ------------------------- | ---------------------------------------------- |
+| **브라우저**      | JS, CSS, 이미지 등        | `Cache-Control`, `ETag`, 버전 쿼리스트링       |
+| **CDN/프록시**    | CloudFront, Cloudflare    | TTL 설정, 강제 Purge, 파일 이름 변경           |
+| **서버**          | Redis, Memory, File cache | Key 삭제, TTL, 조건부 갱신                     |
+| **클라이언트 앱** | 모바일/SPA 캐시           | 로컬스토리지 갱신, `useEffect`로 조건부 리페치 |
 
-   - 즉시 수동으로 무효화 필요
-   - 사용자는 이미 캐시된 파일을 보고 있을 수 있음
+### (5) Repository secret과 환경변수
 
-   📍 시점: 문제 원인을 수정한 뒤, 수동으로 invalidate 또는 수동 배포 후 invalidate
+#### ❓ Secrets
+
+- GitHub 저장소에 공개적으로 업로드할 수 없는 민감/보안 정보를 저장하는 곳.
+- 예시
+  - AWS Access Key
+  - Firebase API Key
+  - DB 비밀번호
+  - 배포용 토큰
+
+GitHub Actions에서 `${{ secrets.AWS_ACCESS_KEY_ID }}` 형태로 접근 가능하다.
+
+#### ❓ 환경변수
+
+- 빌드, 배포, 런타임 설정을 환경마다 다르게 하기 위해 사용하는 key-value 포맷의 설정값.
+- 예시
+  - `BASE_API_PATH=https://api.example.com`
+  - `NODE_ENV=development`
 
 ### CDN 적용 시 성능 개선 요소
 
@@ -225,9 +282,129 @@ npm ci는 처음 접해봤습니다. ci가 continuous integration의 약자인 �
 
   > HTTPS를 사용할 경우, CloudFront가 보안 + 성능 모두에서 우위
 
-## 학습 효과
+## 📝 6. 성능 최적화 분석 보고서
 
-## 과제 피드백
+### (1) S3 버킷 웹사이트, CloutFront 배포 도메인, Route53 대체 도메인 네트워크 탭 비교
+
+![s3-cf-compare](./assets/images/s3-cf-compare.png)
+
+> 좌측은 S3 버킷 웹사이트, 우측은 CloutFront 배포 도메인. 용량과 시간에서 큰 차이를 보인다.
+
+![s3-cf-compare](./assets/images/s3-cf-compare.png)
+
+| 측정 지표            | S3    | CF    | Route53 | S3 <-> CF 개선율 |
+| -------------------- | ----- | ----- | ------- | ---------------- |
+| **총 완료 시간**     | 7.39s | 7.00s | 7.03s   | 5.3% ⬇️          |
+| **DOMContentLoaded** | 353ms | 66ms  | 54ms    | 81.3% ⬇️         |
+| **로드**             | 736ms | 140ms | 128ms   | 81.0% ⬇️         |
+| **전송 크기**        | 456KB | 173KB | 173KB   | 62.1% ⬇️         |
+| **리소스 크기**      | 450KB | 450KB | 450KB   | 0%               |
+
+> 좌측은 CloutFront 배포 도메인, 우측은 Route53 대체 도메인. 용량과 시간이 대동소이하다.
+
+### (2) WebPageTest.org를 통한 비교
+
+#### 👀 Visual Progress
+
+![visual-progress](./assets/images/visual-progress.png)
+
+- CloudFront / Route53는 1.6~2.0초 내에 100% 렌더링 완료
+- S3는 5초가 넘어서야 완전히 로드됨 → 차이가 매우 큼
+- Route53과 CloudFront가 동일한 선형 그래프를 가지는 이유는 동일한 CloudFront를 백엔드로 두었기 때문임.
+
+> 📌 CloudFront를 사용할 경우 시각적으로 빠른 피드백을 제공할 수 있고, 유저 체감 성능이 월등히 향상됨.
+
+#### 🔋 Timings
+
+![timings](./assets/images/timings.png)
+
+- Time to First Byte (TTFB): S3는 느리고 CloudFront는 빠름 (CDN 캐시 영향)
+- Start Render / First Contentful Paint / LCP 모두 S3가 현저히 느림
+- Load Time / Visually Complete 역시 S3는 평균 5초 이상, CF는 2초 이내
+- CPU Busy Time: S3가 훨씬 길다 → 리소스 최적화가 덜 되어 있음
+- Speed Index: CloudFront가 가장 낮음 → “빠르게 보이는 정도”가 가장 뛰어남
+
+> 📌 CloudFront를 붙이면 초기 응답부터 콘텐츠 렌더, 사용자 체감 속도 전반이 좋아짐. S3 단독은 성능 병목이 명확함.
+
+#### 🪣 Bytes
+
+![bytes](./assets/images/bytes.png)
+
+- S3는 JS, HTML, Font 등을 모두 거의 2배 가량 더 많이 전송
+- CloudFront, Route53은 용량이 절반가량 줄어 있음
+  - 이유: 압축 및 캐시 최적화, 중복 자산 제거, 헤더 최적화 등 CDN의 이점
+
+> 📌 CloudFront는 압축을 통해 동일한 콘텐츠를 더 작고 빠르게 전송 → 네트워크 비용 절감 + 사용자 경험 개선
+
+### Chrome Devtools LightHouse
+
+![s3-lighthouse](./assets/images/s3-lighthouse.png)
+
+![cf-lighthouse](./assets/images/cf-lighthouse.png)
+
+![route53-lighthouse](./assets/images/route53-lighthouse.png)
+
+| 지표                         | S3    | Route53 | CloudFront | 개선율 (S3 → CF) |
+| ---------------------------- | ----- | ------- | ---------- | ---------------- |
+| **성능 점수**                | 76    | 100     | 100        | +31.6% 상승      |
+| **First Contentful Paint**   | 0.8s  | 0.9s    | 0.9s       | **–**            |
+| **Largest Contentful Paint** | 3.9s  | 1.7s    | 1.3s       | **66.7% ⬇️**     |
+| **Total Blocking Time**      | 470ms | 10ms    | 0ms        | **100% ⬇️**      |
+| **Speed Index**              | 3.1s  | 0.9s    | 0.9s       | **71.0% ⬇️**     |
+| **Cumulative Layout Shift**  | 0     | 0       | 0          | 동일             |
+
+## 📑 7. 그 외에 배운 것
+
+### (1) `npm install` vs `npm ci`
+
+npm ci는 처음 접해봤습니다. ci가 continuous integration의 약자인 것은 쉽게 추론이 가능했고 스크립트 내에서의 위치로 의존성을 설치하는거구나 눈치를 채긴 했지만 기능의 정확한 동작이나 npm install 과의 차이는 모르기 때문에 정리를 했습니다.
+
+#### `npm install`
+
+- package.json을 기반으로 의존성을 설치함.
+- package-lock.json이 있으면 이를 참고하지만, 새로 생기거나 바뀔 수 있음.
+- node_modules를 유지하며 증분 설치 가능.
+- 로컬 개발 중 새로운 패키지를 추가할 때 사용.
+- 잠재적으로 node_modules가 lock file과 일치하지 않을 수 있음.
+
+#### `npm ci`
+
+- package-lock.json을 정확하게 따름.
+- node_modules 폴더가 완전히 삭제되고 재설치됨.
+- package-lock.json과 package.json이 일치하지 않으면 실패함.
+- CI/CD 환경이나 재현 가능한 빌드가 필요할 때 사용함.
+- 빠르고 일관된 설치를 보장함.
+
+#### ✅ 요약
+
+| 항목                              | `npm install`                             | `npm ci`                                |
+| --------------------------------- | ----------------------------------------- | --------------------------------------- |
+| **용도**                          | 개발 및 일반 설치                         | CI/CD, 자동화 환경                      |
+| **속도**                          | 상대적으로 느림                           | 더 빠름                                 |
+| **`package-lock.json` 사용 여부** | 선택적 (존재 시 반영하되, 덮어쓰기도 함)  | 반드시 필요하며, **엄격하게** 따름      |
+| **파일 일관성 보장**              | 낮음 (버전 차이 가능성 존재)              | 높음 (lock 파일 기반으로 정확하게 설치) |
+| **노드 모듈 삭제**                | 하지 않음                                 | **`node_modules` 폴더 삭제 후 재설치**  |
+| **수정 가능성**                   | `package-lock.json`이 수정될 수 있음      | 수정되지 않음                           |
+| **호환성 검사**                   | `package.json`과 lock 파일 불일치 시 경고 | 불일치 시 **설치 실패**                 |
+
+#### 🛠 언제 무엇을 써야 할까?
+
+| 상황                                                              | 추천 명령어   |
+| ----------------------------------------------------------------- | ------------- |
+| 로컬에서 패키지를 추가/업데이트하거나 실험할 때                   | `npm install` |
+| CI/CD 파이프라인에서 안정적으로 재현 가능한 환경을 만들고 싶을 때 | `npm ci`      |
+| 새로운 팀원이 프로젝트를 셋업할 때 (일관된 환경이 필요함)         | `npm ci`      |
+
+#### 👍 대응 되는 명령어
+
+| 패키지 매니저      | 일반 설치      | CI 전용 설치                     |
+| ------------------ | -------------- | -------------------------------- |
+| **npm**            | `npm install`  | `npm ci`                         |
+| **Yarn (v1)**      | `yarn install` | `yarn install --frozen-lockfile` |
+| **Yarn (v2 이상)** | `yarn install` | `yarn install --immutable`       |
+| **pnpm**           | `pnpm install` | `pnpm install --frozen-lockfile` |
+
+## 🔄 8. 과제 피드백
 
 1. 😄 좋았던 점
 
